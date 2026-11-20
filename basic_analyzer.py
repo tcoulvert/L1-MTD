@@ -266,7 +266,7 @@ def main(files: list[str], plot_dir: str, load_method: str):
     plt.savefig(os.path.join(plot_dir, f"l1mu_pt_vs_eta_with_without_match.png"))
 
     # pt vs. eta L1 muon - HLT track matching efficiency
-    plt.figure()
+    plt.figure(figsize=(rcParams["figure.figsize"][0]*1.2, rcParams["figure.figsize"][1]))
     image = plt.imshow((hnum / hdenom).T, extent=[xbins[0], xbins[-1], ybins[0], ybins[-1]], aspect='auto', origin='lower')
     plt.title(r'$p_T vs. \eta$ of L1 $\mu$ to HLT track matching efficiency')
     plt.xlabel(r'$\mu_{p_T}$')
