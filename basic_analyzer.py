@@ -278,7 +278,6 @@ def main(files: list[str], plot_dir: str, load_method: str):
     # pt vs. delta t
     plt.figure()
     _, _, _, image = plt.hist2d(flatnp(real_muons['mu'].pt), np.abs(flatnp(real_muons['deltat'])), range=((0., 20.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
     plt.title('Density '+r'$\mu_{p_T} vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$\mu_{p_T}$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
@@ -289,7 +288,6 @@ def main(files: list[str], plot_dir: str, load_method: str):
     # eta vs. delta t
     plt.figure()
     _, _, _, image = plt.hist2d(flatnp(real_muons['mu'].eta), np.abs(flatnp(real_muons['deltat'])), range=((-5., 5.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
     plt.title('Density '+r'$\mu_{\eta} vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$\mu_{\eta}$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
