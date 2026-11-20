@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import mplhep as hep
 import uproot
 import vector
+from matplotlib import rcParams
 
 hep.style.use(hep.style.ROOT)
 vector.register_awkward()
@@ -28,7 +29,9 @@ parser.add_argument(
 ######################################################
 
 NEVTS = 0
-CUTIDX = 1
+CUTIDX = 0
+EVENT_CUTFLOW = []
+OBJECT_CUTFLOW = {}
 REQUIRED_FIELDS = ['event', 'L1GTgmtTkMuon_*', 'hltGeneralTrack_*', 'GenPart_*', 'L1PV_*', 'hltPrimaryVertex4D_*']
 ######################################################
 
@@ -44,15 +47,20 @@ def load_uproot(files: list[str], method: str):
 
 
 def add_event_cut(prev_mask, new_mask, label):
-    global CUTIDX
+    global CUTIDX, EVENT_CUTFLOW
     and_mask = np.logical_and(prev_mask, new_mask)
-    if CUTIDX == 1:
-        print(f'{CUTIDX}) {label}: {np.sum(and_mask)}, {100*np.sum(and_mask)/NEVTS:.2f}%')
+    if CUTIDX <= 1:
+        EVENT_CUTFLOW.append(f'{CUTIDX}) {label}: {np.sum(and_mask)}, {100*np.sum(and_mask)/NEVTS:.2f}%')
     else:
-        print(f'{CUTIDX}) {label.replace("requiring", "requiring previous and")}: {np.sum(and_mask)}, {100*np.sum(and_mask)/NEVTS:.2f}%')
-        print(f'    --> {label}: {np.sum(new_mask)}, {100*np.sum(new_mask)/NEVTS:.2f}%')
+        EVENT_CUTFLOW.append(f'{CUTIDX}) {label.replace("requiring", "requiring previous and")}: {np.sum(and_mask)}, {100*np.sum(and_mask)/NEVTS:.2f}%')
+        EVENT_CUTFLOW.append(f'    --> {label}: {np.sum(new_mask)}, {100*np.sum(new_mask)/NEVTS:.2f}%')
     CUTIDX += 1
     return and_mask
+
+def print_cutflow(obj: list[str], title: str=''):
+    if title != '':
+        print(title);print('-'*60)
+    for statement in obj: print(statement)
 
 
 @nb.njit
@@ -123,7 +131,7 @@ def main(files: list[str], plot_dir: str, load_method: str):
     events = load_uproot(files, load_method)
     global NEVTS; NEVTS = ak.num(events['event'], axis=0)
     event_mask = np.ones(NEVTS, dtype=bool)
-    print(f'0) N. events before selections: {np.sum(event_mask)}, {100*np.sum(event_mask)/NEVTS:.2f}%')
+    event_mask = add_event_cut(event_mask, event_mask, 'N. events before selections')
 
     ############################
     ## OBJECTS ##
@@ -173,10 +181,10 @@ def main(files: list[str], plot_dir: str, load_method: str):
 
     ############################
     ## OBJECT SELECTIONS ##
-    good_l1vtx = l1vtx[l1vtx.z0 > -32]
-    good_hltvtx = hltvtx[hltvtx.isGood > 0]
-    good_hlttk = hlttk[(hlttk['sigmat0safe'] > 0) & (hlttk['mtdQualMVA'] > 0.5)]
     good_l1mu = l1mu[(l1mu.pt > 10) & (np.abs(l1mu.eta) < 2.4)]
+    good_hlttk = hlttk[(hlttk['sigmat0safe'] > 0) & (hlttk['mtdQualMVA'] > 0.5)]
+    good_l1vtx = l1vtx[l1vtx.z0 > -32]
+    good_hltvtx = ak.with_field(hltvtx[hltvtx.isGood > 0], ak.local_index(hltvtx[hltvtx.isGood > 0], axis=1), 'idx')
 
     ############################
     ## EVENT SELECTIONS ##
@@ -205,9 +213,15 @@ def main(files: list[str], plot_dir: str, load_method: str):
     l1vtx_hltvtx_matched_vtx = ak.with_field(l1vtx_hltvtx_matched_vtx, nb_var_at_minDz(l1vtx_hltvtx_matched_vtx, good_hltvtx, good_hltvtx['x'], ak.ArrayBuilder()).snapshot(), 'x')
     l1vtx_hltvtx_matched_vtx = ak.with_field(l1vtx_hltvtx_matched_vtx, nb_var_at_minDz(l1vtx_hltvtx_matched_vtx, good_hltvtx, good_hltvtx['y'], ak.ArrayBuilder()).snapshot(), 'y')
     l1vtx_hltvtx_matched_vtx = ak.with_field(l1vtx_hltvtx_matched_vtx, nb_var_at_minDz(l1vtx_hltvtx_matched_vtx, good_hltvtx, good_hltvtx['sigmat'], ak.ArrayBuilder()).snapshot(), 'sigmat')
+    l1vtx_hltvtx_matched_vtx = ak.with_field(l1vtx_hltvtx_matched_vtx, nb_var_at_minDz(l1vtx_hltvtx_matched_vtx, good_hltvtx, good_hltvtx['idx'], ak.ArrayBuilder()).snapshot(), 'hltidx')
     event_mask = add_event_cut(
         event_mask, ak.num(l1vtx_hltvtx_good_matches, axis=1) > 0, 
-        'N. events after requiring at least 1 good L1 vertex matched to a good HLT vertex'
+        'N. events after requiring at least 1 good L1 vertex matched to any good HLT vertex'
+    )
+    l1vtx_hltvtx_matched_vtx = l1vtx_hltvtx_matched_vtx[l1vtx_hltvtx_matched_vtx['hltidx'] == 0]    
+    event_mask = add_event_cut(
+        event_mask, ak.num(l1vtx_hltvtx_matched_vtx, axis=1) > 0, 
+        'N. events after requiring at least 1 good L1 vertex matched to the primary HLT vertex'
     )
 
     # Find real (gen-matched) and fake muons
@@ -235,83 +249,111 @@ def main(files: list[str], plot_dir: str, load_method: str):
         plt.tight_layout()
         plt.savefig(os.path.join(plot_dir, f"deltat_real_fake{'_density' if density else ''}.png"))
 
+    # pt vs. eta L1 muon - HLT track matching
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(rcParams["figure.figsize"][0]*2, rcParams["figure.figsize"][1]))
+    hdenom, xbins, ybins, image_denom = ax1.hist2d(flatnp(good_l1mu.pt), flatnp(good_l1mu.eta), range=((0., 100.),(-2.4, 2.4)), bins=50)
+    ax1.set_title(f"{ak.sum(ak.num(good_l1mu, axis=1), axis=0)} "+'L1 '+r'$\mu$')
+    ax1.set_xlabel(r'$\mu_{p_T}$')
+    ax1.set_ylabel(r'$\mu_{\eta}$')
+    fig.colorbar(image_denom, ax=ax1)
+    hnum, _, _, image_num = ax2.hist2d(flatnp(l1mu_hlttk_matched_muons.pt), flatnp(l1mu_hlttk_matched_muons.eta), range=((0., 100.),(-2.4, 2.4)), bins=50)
+    ax2.set_title(f"{ak.sum(ak.num(l1mu_hlttk_matched_muons, axis=1), axis=0)} "+'L1 '+r'$\mu$'+' matched to HLT track')
+    ax2.set_xlabel(r'$\mu_{p_T}$')
+    ax2.set_ylabel(r'$\mu_{\eta}$')
+    fig.colorbar(image_num, ax=ax2)
+    fig.suptitle(r'$p_T vs. \eta$ of L1 $\mu$ with and without HLT track matching')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, f"l1mu_pt_vs_eta_with_without_match.png"))
+
+    # pt vs. eta L1 muon - HLT track matching efficiency
+    plt.figure()
+    image = plt.imshow((hnum / hdenom).T, extent=[xbins[0], xbins[-1], ybins[0], ybins[-1]], aspect='auto', origin='lower')
+    plt.title(r'$p_T vs. \eta$ of L1 $\mu$ to HLT track matching efficiency')
+    plt.xlabel(r'$\mu_{p_T}$')
+    plt.ylabel(r'$\mu_{\eta}$')
+    plt.colorbar(image)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, f"matchedl1mu_pt_vs_eta_efficiency.png"))
+
     # pt vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['mu'].pt), np.abs(flatnp(real_muons['deltat'])), range=((0., 20.),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
+    _, _, _, image = plt.hist2d(flatnp(real_muons['mu'].pt), np.abs(flatnp(real_muons['deltat'])), range=((0., 20.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.legend()
     plt.title('Density '+r'$\mu_{p_T} vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$\mu_{p_T}$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"pt_vs_deltat_real_density.png"))
 
     # eta vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['mu'].eta), np.abs(flatnp(real_muons['deltat'])), range=((-5., 5.),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
+    _, _, _, image = plt.hist2d(flatnp(real_muons['mu'].eta), np.abs(flatnp(real_muons['deltat'])), range=((-5., 5.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.legend()
     plt.title('Density '+r'$\mu_{\eta} vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$\mu_{\eta}$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"eta_vs_deltat_real_density.png"))
 
     # t_tk vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['mu'].t), np.abs(flatnp(real_muons['deltat'])), range=((-1500., 1500.),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
+    _, _, _, image = plt.hist2d(flatnp(real_muons['mu'].t), np.abs(flatnp(real_muons['deltat'])), range=((-1500., 1500.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.title('Density '+r'$\mu_t vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$\mu_t$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"ttk_vs_deltat_real_density.png"))
 
     # sigmat_tk vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['mu']['sigmat']), np.abs(flatnp(real_muons['deltat'])), range=((0., 50.),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
+    _, _, _, image = plt.hist2d(flatnp(real_muons['mu']['sigmat']), np.abs(flatnp(real_muons['deltat'])), range=((0., 50.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.title('Density '+r'$\mu_{\sigma_t} vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$\mu_{\sigma_t}$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"sigmattk_vs_deltat_real_density.png"))
 
     # t_vtx vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['vtx'].t), np.abs(flatnp(real_muons['deltat'])), range=((-1500., 1500.),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
+    _, _, _, image = plt.hist2d(flatnp(real_muons['vtx'].t), np.abs(flatnp(real_muons['deltat'])), range=((-1500., 1500.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.title('Density '+r'$vtx_t vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$vtx_t$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"tvtx_vs_deltat_real_density.png"))
 
     # sigmat_vtx vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['vtx']['sigmat']), np.abs(flatnp(real_muons['deltat'])), range=((0., 50.),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
+    _, _, _, image = plt.hist2d(flatnp(real_muons['vtx']['sigmat']), np.abs(flatnp(real_muons['deltat'])), range=((0., 50.),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.title('Density '+r'$vtx_{\sigma_t} vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$vtx_{\sigma_t}$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"sigmatvtx_vs_deltat_real_density.png"))
 
     # x vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['vtx'].x), np.abs(flatnp(real_muons['deltat'])), range=((-0.005, 0.005),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
+    _, _, _, image = plt.hist2d(flatnp(real_muons['vtx'].x), np.abs(flatnp(real_muons['deltat'])), range=((-0.005, 0.005),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.title('Density '+r'$vtx_x vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$vtx_x$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"x_vs_deltat_real_density.png"))
 
     # y vs. delta t
     plt.figure()
-    plt.hist2d(flatnp(real_muons['vtx'].y), np.abs(flatnp(real_muons['deltat'])), range=((-0.005, 0.005),(0., 1500.)), density=True, bins=50, label='Real (gen-matched) '+r'$\mu$')
-    plt.legend()
+    _, _, _, image = plt.hist2d(flatnp(real_muons['vtx'].y), np.abs(flatnp(real_muons['deltat'])), range=((-0.005, 0.005),(0., 1500.)), bins=50, label='Real (gen-matched) '+r'$\mu$')
     plt.title('Density '+r'$vtx_y vs. \Delta t^{\mu}_{vtx}$ for Real Muons')
     plt.xlabel(r'$vtx_y$')
     plt.ylabel(r'$\Delta t^{\mu}_{vtx}$')
+    plt.colorbar(image)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"y_vs_deltat_real_density.png"))
 
@@ -329,3 +371,5 @@ if __name__ == "__main__":
 
     # Run code
     main(root_files, plot_dir, args.load_method)
+    print('+'*60)
+    print_cutflow(EVENT_CUTFLOW, 'Event Cutflow')
